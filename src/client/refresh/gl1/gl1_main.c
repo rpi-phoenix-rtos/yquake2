@@ -1212,6 +1212,9 @@ R_SetLightLevel(entity_t *currententity)
 static void
 RI_RenderFrame(refdef_t *fd)
 {
+	extern int yq2cap_scene_rendered;	/* visual-regression capture gate (gl1_sdl.c) */
+	yq2cap_scene_rendered = 1;
+
 	R_ApplyGLBuffer();	// menu rendering when needed
 	R_RenderView(fd);
 	R_SetLightLevel (NULL);

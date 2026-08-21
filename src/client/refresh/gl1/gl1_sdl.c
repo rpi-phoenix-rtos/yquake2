@@ -43,12 +43,124 @@ extern cvar_t *gl1_discardfb;
 // ----
 
 /*
+ * Deterministic visual-regression capture hook.
+ *
+ * Dumps every scr_capture-th in-game (3D) frame to
+ * <scr_capture_dir>/cap_NNNN.tga as an uncompressed 24-bit BGR bottom-up TGA,
+ * then exits after scr_capture_max shots. The TGA byte layout is identical on
+ * the host reference (native GL / llvmpipe) and the Pi (V3D) so the frames pair
+ * 1:1 for SSIM / black-texture / HUD comparison. Same design as the QuakeSpasm
+ * harness (external/quakespasm gl_screen.c: SCR_CaptureTick / SCR_CaptureFrame).
+ * See docs/inprogress/2026-08-22-quake23-visual-harness.md.
+ *
+ * Determinism is provided by the launch cvars (timedemo 1 + fixedtime <usec> +
+ * cl_particles 0), NOT by this hook. This hook only decides WHICH frames to dump.
+ *
+ * yq2cap_scene_rendered is latched by RI_RenderFrame (gl1_main.c) and cleared
+ * here, so only frames in which the 3D world actually rendered are counted --
+ * loading/menu frames are skipped and index 0 == first demo world frame on every
+ * machine (the renderer cannot see the client's cls.demoplayback directly).
+ */
+int yq2cap_scene_rendered = 0;
+
+static void
+YQ2_CaptureTick(void)
+{
+	static cvar_t *cap = NULL, *cap_max = NULL, *cap_dir = NULL;
+	static int frames = 0, shots = 0;
+	int step, w, h, i, n;
+	byte *pix, hdr[18];
+	char path[1024];
+	const char *dir;
+	FILE *f;
+
+	if (cap == NULL)
+	{
+		cap     = ri.Cvar_Get("scr_capture", "0", 0);
+		cap_max = ri.Cvar_Get("scr_capture_max", "0", 0);
+		cap_dir = ri.Cvar_Get("scr_capture_dir", ".", 0);
+	}
+
+	/* Truncate once and gate on the integer step: a fractional scr_capture in
+	 * (0,1) truncates to 0, and `% 0` is a SIGFPE. Only count real 3D frames. */
+	step = (int)cap->value;
+	if (step < 1 || !yq2cap_scene_rendered)
+	{
+		return;
+	}
+	yq2cap_scene_rendered = 0;
+
+	if ((frames++ % step) != 0)
+	{
+		return;
+	}
+
+	w = vid.width;
+	h = vid.height;
+	n = w * h;
+	pix = malloc((size_t)n * 3);
+	if (pix == NULL)
+	{
+		return;
+	}
+
+#ifdef YQ2CAP_PHOENIX
+	/* Phoenix/V3D renders into a scanout-backed FBO (sdl_phoenix_glctx.c), not
+	 * FB0; a plain glReadPixels there returns noise. Blit the just-rendered
+	 * scanout FBO to a normal FBO on the GPU and read that back (fills pix RGB
+	 * bottom-up, matching the TGA writer below). */
+	extern int phxgl_capture_gl(void *pix, int w, int h);
+	if (!phxgl_capture_gl(pix, w, h))
+#endif
+	{
+		glFinish();
+		glPixelStorei(GL_PACK_ALIGNMENT, 1);
+		glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, pix);
+	}
+
+	for (i = 0; i < n; i++)		/* RGB -> BGR in place */
+	{
+		byte t = pix[i * 3];
+		pix[i * 3] = pix[i * 3 + 2];
+		pix[i * 3 + 2] = t;
+	}
+
+	memset(hdr, 0, sizeof(hdr));
+	hdr[2]  = 2;			/* uncompressed true-color */
+	hdr[12] = w & 0xff; hdr[13] = (w >> 8) & 0xff;
+	hdr[14] = h & 0xff; hdr[15] = (h >> 8) & 0xff;
+	hdr[16] = 24;			/* bpp; descriptor 0 => bottom-up, matches glReadPixels */
+
+	dir = (cap_dir->string && cap_dir->string[0]) ? cap_dir->string : ".";
+	snprintf(path, sizeof(path), "%s/cap_%04d.tga", dir, shots);
+	f = fopen(path, "wb");
+	if (f != NULL)
+	{
+		fwrite(hdr, 1, sizeof(hdr), f);
+		fwrite(pix, 1, (size_t)n * 3, f);
+		fclose(f);
+	}
+	Com_Printf("CAPTURE: cap_%04d.tga %s\n", shots, (f != NULL) ? "OK" : "FAILED");
+	free(pix);
+	shots++;
+
+	if ((int)cap_max->value > 0 && shots >= (int)cap_max->value)
+	{
+		Com_Printf("CAPTURE: done (%d shots), quitting\n", shots);
+		fflush(NULL);
+		exit(0);
+	}
+}
+
+/*
  * Swaps the buffers and shows the next frame.
  */
 void
 RI_EndFrame(void)
 {
 	R_ApplyGLBuffer();	// to draw buffered 2D text
+
+	YQ2_CaptureTick();	// visual-regression capture (no-op unless scr_capture>0)
 
 #ifdef YQ2_GL1_GLES
 	static const GLenum attachments[3] = {GL_COLOR_EXT, GL_DEPTH_EXT, GL_STENCIL_EXT};
