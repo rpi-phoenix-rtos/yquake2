@@ -33,6 +33,16 @@
 #include <SDL2/SDL.h>
 #endif
 
+/* Capture-harness TCP sink (Pi -> host): the nfs-fs VFS large-write bridge stalls,
+ * so on the Pi the deterministic capture streams frames over a raw TCP socket to a
+ * host listener (scripts/quake-capture-sink.py) instead of writing files. Same wire
+ * format + byte order as the Quake1 harness (external/quakespasm gl_screen.c). */
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <stdint.h>
+
 static SDL_Window* window = NULL;
 static SDL_GLContext context = NULL;
 qboolean IsHighDPIaware = false;
@@ -63,10 +73,53 @@ extern cvar_t *gl1_discardfb;
  */
 int yq2cap_scene_rendered = 0;
 
+/* TCP sink socket (opened lazily on the first captured frame, kept open for the
+ * whole run). -1 = not yet connected / disabled (host cvar empty). */
+static int yq2cap_sock = -1;
+
+static int
+YQ2_CaptureSendAll(int s, const void *buf, size_t len)
+{
+	const char *p = (const char *)buf;
+	size_t off = 0;
+	while (off < len)
+	{
+		int r = send(s, p + off, len - off, 0);
+		if (r <= 0)
+		{
+			return -1;
+		}
+		off += (size_t)r;
+	}
+	return 0;
+}
+
+static int
+YQ2_CaptureConnect(const char *host, int port)
+{
+	struct sockaddr_in sa;
+	int s = socket(AF_INET, SOCK_STREAM, 0);
+	if (s < 0)
+	{
+		return -1;
+	}
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons((unsigned short)port);
+	sa.sin_addr.s_addr = inet_addr(host);
+	if (connect(s, (struct sockaddr *)&sa, sizeof(sa)) != 0)
+	{
+		close(s);
+		return -1;
+	}
+	return s;
+}
+
 static void
 YQ2_CaptureTick(void)
 {
 	static cvar_t *cap = NULL, *cap_max = NULL, *cap_dir = NULL;
+	static cvar_t *cap_host = NULL, *cap_port = NULL;
 	static int frames = 0, shots = 0;
 	int step, w, h, i, n;
 	byte *pix, hdr[18];
@@ -76,9 +129,11 @@ YQ2_CaptureTick(void)
 
 	if (cap == NULL)
 	{
-		cap     = ri.Cvar_Get("scr_capture", "0", 0);
-		cap_max = ri.Cvar_Get("scr_capture_max", "0", 0);
-		cap_dir = ri.Cvar_Get("scr_capture_dir", ".", 0);
+		cap      = ri.Cvar_Get("scr_capture", "0", 0);
+		cap_max  = ri.Cvar_Get("scr_capture_max", "0", 0);
+		cap_dir  = ri.Cvar_Get("scr_capture_dir", ".", 0);
+		cap_host = ri.Cvar_Get("scr_capture_host", "", 0);
+		cap_port = ri.Cvar_Get("scr_capture_port", "5599", 0);
 	}
 
 	/* Truncate once and gate on the integer step: a fractional scr_capture in
@@ -130,6 +185,45 @@ YQ2_CaptureTick(void)
 	hdr[12] = w & 0xff; hdr[13] = (w >> 8) & 0xff;
 	hdr[14] = h & 0xff; hdr[15] = (h >> 8) & 0xff;
 	hdr[16] = 24;			/* bpp; descriptor 0 => bottom-up, matches glReadPixels */
+
+	/* TCP sink (Pi): stream [u32 idx][u32 tgalen][TGA bytes] to a host listener,
+	 * which writes cap_<idx>.tga. Same wire format + network byte order as the Q1
+	 * harness. Bypasses the broken nfs-fs VFS large-write path. Falls back to the
+	 * fopen/fwrite path below when scr_capture_host is empty (host reference run). */
+	if (cap_host->string && cap_host->string[0])
+	{
+		uint32_t rec[2];
+		uint32_t tgalen = (uint32_t)(sizeof(hdr) + (size_t)n * 3);
+		if (yq2cap_sock < 0)
+		{
+			yq2cap_sock = YQ2_CaptureConnect(cap_host->string, (int)cap_port->value);
+			Com_Printf("CAPTURE: tcp %s:%d %s\n", cap_host->string,
+				(int)cap_port->value, (yq2cap_sock >= 0) ? "connected" : "FAILED");
+		}
+		if (yq2cap_sock >= 0)
+		{
+			rec[0] = htonl((uint32_t)shots);
+			rec[1] = htonl(tgalen);
+			if (YQ2_CaptureSendAll(yq2cap_sock, rec, sizeof(rec)) != 0 ||
+			    YQ2_CaptureSendAll(yq2cap_sock, hdr, sizeof(hdr)) != 0 ||
+			    YQ2_CaptureSendAll(yq2cap_sock, pix, (size_t)n * 3) != 0)
+			{
+				Com_Printf("CAPTURE: tcp send failed at idx=%d\n", shots);
+				close(yq2cap_sock);
+				yq2cap_sock = -1;
+			}
+		}
+		free(pix);
+		shots++;
+
+		if ((int)cap_max->value > 0 && shots >= (int)cap_max->value)
+		{
+			Com_Printf("CAPTURE: done (%d shots), quitting\n", shots);
+			fflush(NULL);
+			exit(0);
+		}
+		return;
+	}
 
 	dir = (cap_dir->string && cap_dir->string[0]) ? cap_dir->string : ".";
 	snprintf(path, sizeof(path), "%s/cap_%04d.tga", dir, shots);
