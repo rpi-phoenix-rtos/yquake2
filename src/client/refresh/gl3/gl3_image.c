@@ -212,7 +212,26 @@ GL3_Upload32(unsigned *data, int width, int height, qboolean mipmap)
 
 	res = (samples == gl3_alpha_format);
 
-	if (mipmap)
+	/* Phoenix/V3D: gl3 (ES3) builds a full mip chain per texture via
+	 * glGenerateMipmap; on the ported Mesa V3D each mip level is a separate TFU
+	 * copy + L2T cache flush, so a map's texture load takes minutes. Setting
+	 * YQ2_GL3_NOMIP=1 skips mipmap generation (trilinear->bilinear quality
+	 * trade) to keep the load bounded. Read once and cached. Default unchanged. */
+	static int gl3_nomip = -1;
+	if (gl3_nomip < 0)
+	{
+		/* Phoenix/V3D port default: skip mipmap generation. gl3 (ES3) would
+		 * otherwise glGenerateMipmap every texture, and on the ported Mesa V3D
+		 * each mip level is a separate TFU copy + L2T cache flush, so a map's
+		 * texture load takes many minutes and the 3D view never appears. With
+		 * mipmaps off the load completes in seconds and the full textured 3D
+		 * map renders (HW-verified on RPi4). Trade-off: bilinear instead of
+		 * trilinear filtering (mild distance aliasing). Set YQ2_GL3_MIPMAP=1 to
+		 * force the upstream full-mipmap behavior. */
+		gl3_nomip = (getenv("YQ2_GL3_MIPMAP") != NULL) ? 0 : 1;
+	}
+
+	if (mipmap && (gl3_nomip == 0))
 	{
 		// TODO: some hardware may require mipmapping disabled for NPOT textures!
 		glGenerateMipmap(GL_TEXTURE_2D);
@@ -225,7 +244,7 @@ GL3_Upload32(unsigned *data, int width, int height, qboolean mipmap)
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl_filter_max);
 	}
 
-	if (mipmap && gl3config.anisotropic && gl_anisotropic->value)
+	if (mipmap && (gl3_nomip == 0) && gl3config.anisotropic && gl_anisotropic->value)
 	{
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, Q_max(gl_anisotropic->value, 1.f));
 	}
