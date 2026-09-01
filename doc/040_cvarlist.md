@@ -356,6 +356,10 @@ it's `+set busywait 0` (setting the `busywait` cvar) and `-portable`
 * **s_doppler**: If set to `1` doppler effects are enabled. This is only
   supported by the OpenAL sound backend.
 
+* **s_muteonfocusloss**: If set to `1` (the default) all sounds are
+  muted when the game looses focus. Sound are unmuted when the game
+  regains focus.
+
 * **s_openal**: Use OpenAL for sound playback. This is enabled by
   default. OpenAL gives a huge quality boost over the classic sound
   system and supports surround speakers and HRTF for headphones. OpenAL
