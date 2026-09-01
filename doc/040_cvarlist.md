@@ -344,6 +344,9 @@ it's `+set busywait 0` (setting the `busywait` cvar) and `-portable`
   0.  Setting this cvar to `1` disables this behavior, the music keeps
   playing.
 
+* **ogg_pausewithgame**: When `1` the background is paused when the game
+  is paused. Defaults to `0`.
+
 * **ogg_shuffle**: Ogg/Vorbis playback mode. Supported modes are:
   - `0`: Loop the current track (the default).
   - `1`: Play the current track once, then stop.
