@@ -333,9 +333,13 @@ qboolean
 VID_HasRenderer(const char *renderer)
 {
 	/* Phoenix single-ELF port: the renderer is statically linked, there is
-	 * no ref_*.so file to stat. Report the compiled-in renderer (gl1) as
-	 * present; Sys_LoadLibrary() hands back its GetRefAPI directly. */
-	return (strcmp(renderer, "gl1") == 0) ? true : false;
+	 * no ref_*.so file to stat. GetRefAPI link-resolves to the ONE compiled-in
+	 * renderer, which is gl1 OR gl3/gles3 depending on how the port was built,
+	 * so accept any of those names; Sys_LoadLibrary() hands back its GetRefAPI.
+	 * Naming only gl1 here breaks the gl3/GLES3 build, which is the one we
+	 * currently stage. */
+	return ((strcmp(renderer, "gl1") == 0) || (strcmp(renderer, "gl3") == 0) ||
+		(strcmp(renderer, "gles3") == 0)) ? true : false;
 }
 
 /*
