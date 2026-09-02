@@ -41,49 +41,15 @@ R_Printf(int level, const char* msg, ...)
 	va_end(argptr);
 }
 
-void
-Sys_Error(const char *error, ...)
-{
-	va_list argptr;
-	char text[MAXPRINTMSG];
-
-	va_start(argptr, error);
-	vsnprintf(text, sizeof(text), error, argptr);
-	va_end(argptr);
-
-	ri.Sys_Error(ERR_FATAL, "%s", text);
-}
-
-void
-Com_Printf(const char *msg, ...)
-{
-	va_list argptr;
-	va_start(argptr, msg);
-	ri.Com_VPrintf(PRINT_ALL, msg, argptr);
-	va_end(argptr);
-}
-
-void
-Com_DPrintf(const char *msg, ...)
-{
-	va_list argptr;
-	va_start(argptr, msg);
-	ri.Com_VPrintf(PRINT_DEVELOPER, msg, argptr);
-	va_end(argptr);
-}
-
-void
-Com_Error(int code, const char *fmt, ...)
-{
-	va_list argptr;
-	char text[MAXPRINTMSG];
-
-	va_start(argptr, fmt);
-	vsnprintf(text, sizeof(text), fmt, argptr);
-	va_end(argptr);
-
-	ri.Sys_Error(code, "%s", text);
-}
+/*
+ * Phoenix single-ELF port: the renderer is linked into the same binary as
+ * the engine, so Sys_Error / Com_Printf / Com_DPrintf / Com_Error resolve
+ * directly to the engine's real implementations. The .so-era forwarders
+ * that used to live here (routing through ri.* because a separate ref_*.so
+ * could not see the engine's symbols) are dropped to avoid multiple-
+ * definition with the engine copies. R_Printf above still routes through
+ * ri.Com_VPrintf, which is the renderer's public print entry point.
+ */
 
 /* shared variables */
 refdef_t r_newrefdef;

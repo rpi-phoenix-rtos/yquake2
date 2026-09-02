@@ -147,31 +147,13 @@ GetGameAPI(const game_import_t *import)
  * this is only here so the functions
  * in shared source files can link
  */
-void
-Sys_Error(const char *error, ...)
-{
-	va_list argptr;
-	char text[1024];
-
-	va_start(argptr, error);
-	vsnprintf(text, sizeof(text), error, argptr);
-	va_end(argptr);
-
-	gi.error("%s", text);
-}
-
-void
-Com_Printf(const char *msg, ...)
-{
-	va_list argptr;
-	char text[1024];
-
-	va_start(argptr, msg);
-	vsnprintf(text, sizeof(text), msg, argptr);
-	va_end(argptr);
-
-	gi.dprintf("%s", text);
-}
+/*
+ * Phoenix single-ELF port: the game is linked into the engine binary rather
+ * than a separate game.so, so Sys_Error / Com_Printf resolve directly to the
+ * engine's real implementations. The gi.error / gi.dprintf forwarders that
+ * used to live here (a game.so could not see the engine's symbols) are
+ * dropped to avoid multiple-definition with the engine copies.
+ */
 
 /* ====================================================================== */
 

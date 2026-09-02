@@ -332,15 +332,10 @@ VID_GetRendererLibPath(const char *renderer, char *path, size_t len)
 qboolean
 VID_HasRenderer(const char *renderer)
 {
-	char reflib_path[MAX_OSPATH] = {0};
-	VID_GetRendererLibPath(renderer, reflib_path, sizeof(reflib_path));
-
-	if (Sys_IsFile(reflib_path))
-	{
-		return true;
-	}
-
-	return false;
+	/* Phoenix single-ELF port: the renderer is statically linked, there is
+	 * no ref_*.so file to stat. Report the compiled-in renderer (gl1) as
+	 * present; Sys_LoadLibrary() hands back its GetRefAPI directly. */
+	return (strcmp(renderer, "gl1") == 0) ? true : false;
 }
 
 /*

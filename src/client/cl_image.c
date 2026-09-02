@@ -37,8 +37,10 @@
 #define STBI_FREE(p)       free(p)
 // Switch of the thread local stuff. Breaks mingw under Windows.
 #define STBI_NO_THREAD_LOCALS
-// include implementation part of stb_image into this file
-#define STB_IMAGE_IMPLEMENTATION
+// Phoenix single-ELF port: the renderer's files/stb.c already instantiates
+// STB_IMAGE_IMPLEMENTATION, and in one binary a second instantiation here
+// multiple-defines every stbi_* symbol. Include the header for declarations
+// only; the client's stbi_* calls bind to the renderer's single copy.
 #include "refresh/files/stb_image.h"
 
 static const byte *
