@@ -90,6 +90,7 @@ cvar_t *gl_texturemode;
 cvar_t *gl_drawbuffer;
 cvar_t *r_clear;
 cvar_t *gl3_particle_size;
+cvar_t *gl3_discardfb;
 cvar_t *gl3_particle_fade_factor;
 cvar_t *gl3_particle_square;
 cvar_t *gl3_colorlight;
@@ -224,6 +225,7 @@ GL3_Register(void)
 	//  1: reduce calls to glBufferData() with one big VBO (see GL3_BufferAndDraw3D())
 	// -1: auto (let yq2 choose to enable/disable this based on detected driver)
 	gl3_usebigvbo = ri.Cvar_Get("gl3_usebigvbo", "-1", CVAR_ARCHIVE);
+	gl3_discardfb = ri.Cvar_Get("gl3_discardfb", "1", CVAR_ARCHIVE);
 
 	r_norefresh = ri.Cvar_Get("r_norefresh", "0", 0);
 	r_drawentities = ri.Cvar_Get("r_drawentities", "1", 0);
