@@ -126,34 +126,6 @@ void GL3_EndFrame(void)
 		gl3state.vbo3DcurOffset = 0;
 	}
 
-#ifdef YQ2_GL3_GLES3
-	/* Tile-based GPUs (V3D 4.2 here) resolve the whole tile buffer out to memory
-	 * at end-of-pass. Depth and stencil are not needed once the frame has been
-	 * presented, so telling the driver to discard them lets the tile store skip
-	 * writing them -- and bandwidth is the actual bottleneck on this part.
-	 *
-	 * Two details that are easy to get wrong, both checked against our Mesa:
-	 *  - On the DEFAULT framebuffer, GLES wants GL_DEPTH/GL_STENCIL, not the
-	 *    GL_*_ATTACHMENT enums (those are for user FBOs and would raise
-	 *    INVALID_ENUM here).
-	 *  - Both must be listed. With a packed depth/stencil buffer Mesa drops the
-	 *    discard entirely unless depth AND stencil are both named
-	 *    (fbobject.c, discard_attachments(): `mask &= ~zsmask`), so passing only
-	 *    GL_DEPTH would compile, run, and silently do nothing.
-	 *
-	 * Colour is deliberately NOT discarded: this runs immediately before the
-	 * buffer swap, so the colour buffer is the frame being presented.
-	 *
-	 * gl3_discardfb exists to make this measurable in one boot rather than two
-	 * builds: set it to 0 at the console to A/B the frame rate.
-	 */
-	if (gl3_discardfb->value != 0.0f)
-	{
-		static const GLenum discard[] = { GL_DEPTH, GL_STENCIL };
-		glInvalidateFramebuffer(GL_FRAMEBUFFER, 2, discard);
-	}
-#endif
-
 	SDL_GL_SwapWindow(window);
 }
 
