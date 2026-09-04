@@ -49,10 +49,88 @@ gl3image_t gl3textures[MAX_GL3TEXTURES];
 int numgl3textures = 0;
 static int image_max = 0;
 
+enum {
+	SCRAP_WIDTH = 1024,
+	SCRAP_HEIGHT = 1024
+};
+
+static short scrap_allocated[SCRAP_WIDTH];
+static GLuint gl3_scrap_texnum = 0;
+static unsigned scrap_texels[SCRAP_WIDTH * SCRAP_HEIGHT];
+qboolean gl3_scrap_dirty = false;
+
+void
+GL3_Scrap_Init(void)
+{
+	memset (scrap_allocated, 0, sizeof(scrap_allocated));	// empty
+	memset (scrap_texels, 0, sizeof(scrap_texels));	// transparent
+
+	glGenTextures(1, &gl3_scrap_texnum);
+}
+
+/* returns a texture number (relative to g3_scrap_texnum) and the position inside it */
+static int
+GL3_Scrap_AllocBlock(int w, int h, int *x, int *y, const unsigned *pic)
+{
+	w += 2;	// add an empty border to all sides
+	h += 2;
+
+	int best = SCRAP_HEIGHT;
+
+	for (int i = 0; i < SCRAP_WIDTH - w; i++)
+	{
+		int j;
+		int best2 = 0;
+
+		for (j = 0; j < w; j++)
+		{
+			if (scrap_allocated[i + j] >= best)
+			{
+				break;
+			}
+
+			if (scrap_allocated[i + j] > best2)
+			{
+				best2 = scrap_allocated[i + j];
+			}
+		}
+
+		if (j == w)
+		{   /* this is a valid spot */
+			*x = i;
+			*y = best = best2;
+		}
+	}
+
+	if (best + h > SCRAP_HEIGHT)
+	{
+		return -1;
+	}
+
+	for (int i = 0; i < w; i++)
+	{
+		scrap_allocated[*x + i] = best + h;
+	}
+	(*x)++;	// jump the border
+	(*y)++;
+
+	int k=0;
+	for(int i=0; i < h-2; i++)
+	{
+		memcpy(&scrap_texels[(*y + i) * SCRAP_WIDTH + *x],
+				pic + k, (w - 2) * sizeof(unsigned));
+		k += w - 2; // -2 because of w += 2 above
+	}
+
+	gl3_scrap_dirty = true;
+
+	return 0;
+}
+
 void
 GL3_TextureMode(char *string)
 {
-	const int num_modes = ARRLEN(modes);
+	static const int num_modes = ARRLEN(modes);
 	int i;
 
 	for (i = 0; i < num_modes; i++)
@@ -90,6 +168,7 @@ GL3_TextureMode(char *string)
 	const char* nolerplist = gl_nolerp_list->string;
 	const char* lerplist = r_lerp_list->string;
 	qboolean unfiltered2D = r_2D_unfiltered->value != 0;
+	GL3_SelectTMU(GL_TEXTURE0);
 
 	/* change all the existing texture objects */
 	for (i = 0, glt = gl3textures; i < numgl3textures; i++, glt++)
@@ -99,15 +178,18 @@ GL3_TextureMode(char *string)
 		if (unfiltered2D && glt->type == it_pic)
 		{
 			// exception to that exception: stuff on the r_lerp_list
-			nolerp = (lerplist== NULL) || (strstr(lerplist, glt->name) == NULL);
+			nolerp = (lerplist == NULL) || (strstr(lerplist, glt->name) == NULL);
 		}
-		else if(nolerplist != NULL && strstr(nolerplist, glt->name) != NULL)
+		else if (nolerplist != NULL && strstr(nolerplist, glt->name) != NULL)
 		{
 			nolerp = true;
 		}
 
-		GL3_SelectTMU(GL_TEXTURE0);
-		GL3_Bind(glt->texnum);
+		if ( !GL3_Bind(glt->texnum) )
+		{
+			continue;	// don't bother changing anything if texture was already set
+		}
+
 		if ((glt->type != it_pic) && (glt->type != it_sky)) /* mipmapped texture */
 		{
 			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl_filter_min);
@@ -138,7 +220,7 @@ GL3_TextureMode(char *string)
 	}
 }
 
-void
+qboolean
 GL3_Bind(GLuint texnum)
 {
 	extern gl3image_t *draw_chars;
@@ -150,12 +232,13 @@ GL3_Bind(GLuint texnum)
 
 	if (gl3state.currenttexture == texnum)
 	{
-		return;
+		return false;
 	}
 
 	gl3state.currenttexture = texnum;
 	GL3_SelectTMU(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, texnum);
+	return true;
 }
 
 void
@@ -273,6 +356,30 @@ GL3_Upload8(const byte *data, size_t width, size_t height, qboolean mipmap)
 	return ret;
 }
 
+void
+GL3_Scrap_Upload(void)
+{
+	GL3_Bind(gl3_scrap_texnum);
+
+	GL3_Upload32(scrap_texels, SCRAP_WIDTH, SCRAP_HEIGHT, false);
+
+	if (r_2D_unfiltered->value != 0)
+	{
+		// 2D textures shouldn't be filtered by default (r_2D_unfiltered),
+		// so the scrap shouldn't be filtered
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	}
+	else // 2D textures should be filtered by default => filter the scrap
+	{
+		// we can't use gl_filter_min which might be GL_*_MIPMAP_*
+		// also, there's no anisotropic filtering for textures w/o mipmaps
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl_filter_max);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl_filter_max);
+	}
+	gl3_scrap_dirty = false;
+}
+
 /*
  * This is also used as an entry point for the generated r_notexture
  */
@@ -286,7 +393,8 @@ GL3_LoadPic(char *name, byte *pic, int width, int realwidth,
 	int i;
 
 	qboolean nolerp = false;
-	if (r_2D_unfiltered->value && type == it_pic)
+	qboolean default2Dnolerp = r_2D_unfiltered->value != 0.0f;
+	if (default2Dnolerp && type == it_pic)
 	{
 		// if r_2D_unfiltered is true(ish), nolerp should usually be true,
 		// *unless* the texture is on the r_lerp_list
@@ -370,53 +478,112 @@ GL3_LoadPic(char *name, byte *pic, int width, int realwidth,
 		}
 	}
 
-	image->is_lava = (strstr(name, "lava") != NULL);
-
-	// image->scrap = false; // TODO: reintroduce scrap? would allow optimizations in 2D rendering..
-
-	glGenTextures(1, &texNum);
-
-	image->texnum = texNum;
-
-	GL3_SelectTMU(GL_TEXTURE0);
-	GL3_Bind(texNum);
-
-	if (bits == 8)
+	/* load little pics into the scrap */
+	if (nolerp == default2Dnolerp && (image->type == it_pic) &&
+		(image->width <= 128) && (image->height <= 128))
 	{
-		// resize 8bit images only when we forced such logic
-		if (r_scale8bittextures->value)
+		int x=0, y=0;
+
+		/* copy the texels into the scrap block */
+		if(bits == 8)
 		{
-			byte *image_converted;
-			int scale = 2;
-
-			// scale 3 times if lerp image
-			if (!nolerp && (vid.height >= 240 * 3))
-				scale = 3;
-
-			image_converted = malloc(width * height * scale * scale);
-			if (!image_converted)
-				return NULL;
-
-			if (scale == 3) {
-				scale3x(pic, image_converted, width, height);
-			} else {
-				scale2x(pic, image_converted, width, height);
+			unsigned *trans = R_Convert8to32(pic, width, height, d_8to24table);
+			if (trans)
+			{
+				int scrapnum = GL3_Scrap_AllocBlock(width, height, &x, &y, trans);
+				free(trans);
+				if(scrapnum == -1)
+					goto nonscrap;
 			}
-
-			image->has_alpha = GL3_Upload8(image_converted, width * scale, height * scale,
-						(image->type != it_pic && image->type != it_sky));
-			free(image_converted);
+			else
+			{
+				Sys_Error("Error: Couldn't convert texture '%s' to 32bit?!\n", name);
+				return NULL;
+			}
+		}
+		else if(bits == 32)
+		{
+			if (GL3_Scrap_AllocBlock(image->width, image->height, &x, &y, (unsigned*)pic) == -1)
+			{
+				goto nonscrap;
+			}
 		}
 		else
 		{
-			image->has_alpha = GL3_Upload8(pic, width, height,
-						(image->type != it_pic && image->type != it_sky));
+			Sys_Error("Error: texture '%s' has %d bits per pixel, only 8 and 32 supported!\n", name, bits);
+			return NULL;
 		}
+
+		image->texnum = gl3_scrap_texnum;
+		image->scrap = true;
+		image->has_alpha = true;
+		image->sl = (float)x / SCRAP_WIDTH;
+		image->sh = (float)(x + image->width) / SCRAP_WIDTH;
+		image->tl = (float)y / SCRAP_HEIGHT;
+		image->th = (float)(y + image->height) / SCRAP_HEIGHT;
 	}
 	else
 	{
-		image->has_alpha = GL3_Upload32((unsigned *)pic, width, height,
-					(image->type != it_pic && image->type != it_sky));
+	nonscrap:
+
+		image->is_lava = (strstr(name, "lava") != NULL);
+		image->scrap = false;
+
+		glGenTextures(1, &texNum);
+
+		image->texnum = texNum;
+
+		GL3_SelectTMU(GL_TEXTURE0);
+		GL3_Bind(texNum);
+
+		if (bits == 8)
+		{
+			// resize 8bit images only when we forced such logic
+			if (r_scale8bittextures->value)
+			{
+				byte *image_converted;
+				int scale = 2;
+
+				// scale 3 times if lerp image
+				if (!nolerp && (vid.height >= 240 * 3))
+					scale = 3;
+
+				image_converted = malloc(width * height * scale * scale);
+				if (!image_converted)
+					return NULL;
+
+				if (scale == 3) {
+					scale3x(pic, image_converted, width, height);
+				} else {
+					scale2x(pic, image_converted, width, height);
+				}
+
+				image->has_alpha = GL3_Upload8(image_converted, width * scale, height * scale,
+							(image->type != it_pic && image->type != it_sky));
+				free(image_converted);
+			}
+			else
+			{
+				image->has_alpha = GL3_Upload8(pic, width, height,
+							(image->type != it_pic && image->type != it_sky));
+			}
+		}
+		else
+		{
+			image->has_alpha = GL3_Upload32((unsigned *)pic, width, height,
+						(image->type != it_pic && image->type != it_sky));
+		}
+
+		image->sl = 0;
+		image->sh = 1;
+		image->tl = 0;
+		image->th = 1;
+
+		if (nolerp)
+		{
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		}
 	}
 
 	if (realwidth && realheight)
@@ -434,103 +601,6 @@ GL3_LoadPic(char *name, byte *pic, int width, int realwidth,
 		}
 	}
 
-	image->sl = 0;
-	image->sh = 1;
-	image->tl = 0;
-	image->th = 1;
-
-	if (nolerp)
-	{
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	}
-#if 0 // TODO: the scrap could allow batch rendering 2D stuff? not sure it's worth the hassle..
-	/* load little pics into the scrap */
-	if (!nolerp && (image->type == it_pic) && (bits == 8) &&
-		(image->width < 64) && (image->height < 64))
-	{
-		int x, y;
-		int i, j, k;
-		int texnum;
-
-		texnum = Scrap_AllocBlock(image->width, image->height, &x, &y);
-
-		if (texnum == -1)
-		{
-			goto nonscrap;
-		}
-
-		scrap_dirty = true;
-
-		/* copy the texels into the scrap block */
-		k = 0;
-
-		for (i = 0; i < image->height; i++)
-		{
-			for (j = 0; j < image->width; j++, k++)
-			{
-				scrap_texels[texnum][(y + i) * BLOCK_WIDTH + x + j] = pic[k];
-			}
-		}
-
-		image->texnum = TEXNUM_SCRAPS + texnum;
-		image->scrap = true;
-		image->has_alpha = true;
-		image->sl = (x + 0.01) / (float)BLOCK_WIDTH;
-		image->sh = (x + image->width - 0.01) / (float)BLOCK_WIDTH;
-		image->tl = (y + 0.01) / (float)BLOCK_WIDTH;
-		image->th = (y + image->height - 0.01) / (float)BLOCK_WIDTH;
-	}
-	else
-	{
-	nonscrap:
-		image->scrap = false;
-		image->texnum = TEXNUM_IMAGES + (image - gltextures);
-		R_Bind(image->texnum);
-
-		if (bits == 8)
-		{
-			image->has_alpha = R_Upload8(pic, width, height,
-						(image->type != it_pic && image->type != it_sky),
-						image->type == it_sky);
-		}
-		else
-		{
-			image->has_alpha = R_Upload32((unsigned *)pic, width, height,
-						(image->type != it_pic && image->type != it_sky));
-		}
-
-		image->upload_width = upload_width; /* after power of 2 and scales */
-		image->upload_height = upload_height;
-		image->paletted = uploaded_paletted;
-
-		if (realwidth && realheight)
-		{
-			if ((realwidth <= image->width) && (realheight <= image->height))
-			{
-				image->width = realwidth;
-				image->height = realheight;
-			}
-			else
-			{
-				Com_DPrintf(
-						"Warning, image '%s' has hi-res replacement smaller than the original! (%d x %d) < (%d x %d)\n",
-						name, image->width, image->height, realwidth, realheight);
-			}
-		}
-
-		image->sl = 0;
-		image->sh = 1;
-		image->tl = 0;
-		image->th = 1;
-
-		if (nolerp)
-		{
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-		}
-	}
-#endif // 0
 	return image;
 }
 
@@ -686,6 +756,8 @@ GL3_ShutdownImages(void)
 		glDeleteTextures(1, &image->texnum);
 		memset(image, 0, sizeof(*image));
 	}
+
+	glDeleteTextures(1, &gl3_scrap_texnum);
 }
 
 static qboolean IsNPOT(int v)
@@ -768,9 +840,10 @@ GL3_ImageList_f(void)
 				imageType = '?';
 				break;
 		}
+		char isScrap = image->scrap ? 'S' : ' ';
 		char isLava = image->is_lava ? 'L' : ' ';
 
-		Com_Printf("%c%c %3i %3i %s %s: %s %s\n", imageType, isLava, w, h,
+		Com_Printf("%c%c%c %3i %3i %s %s: %s %s\n", isScrap, imageType, isLava, w, h,
 		         formatstrings[image->has_alpha], potstrings[isNPOT], image->name, in_use);
 	}
 

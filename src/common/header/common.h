@@ -87,6 +87,26 @@
 
 /* ================================================================== */
 
+// Quake II requires setjmp() / longjmp() for it's error handling.
+#ifdef _WIN32
+  #if defined(__GNUC__)
+    // When compiled with mingw / gcc, calling the msvcrt.dll longjmp()
+    // corrupts the the internal state of ntdll.dll. This is long
+    // standing // problem, known since at least 2012. Work around by
+    // using gcc builtins instead.
+    #define YQ2_SETJMP(ENV)  __builtin_setjmp(ENV)
+    #define YQ2_LONGJMP(ENV, RET)  __builtin_longjmp(ENV, RET)
+  #else // not __GNUC__
+    #define YQ2_SETJMP(ENV)  setjmp(ENV)
+    #define YQ2_LONGJMP(ENV, RET)  longjmp(ENV, RET)
+  #endif
+#else // not _WIN32
+  #define YQ2_SETJMP(ENV)  setjmp(ENV)
+  #define YQ2_LONGJMP(ENV, RET)  longjmp(ENV, RET)
+#endif
+
+/* ================================================================== */
+
 typedef struct sizebuf_s
 {
 	qboolean allowoverflow;     /* if false, do a Com_Error */
@@ -701,7 +721,6 @@ typedef enum
 void FS_DPrintf(const char *format, ...);
 int FS_FOpenFile(const char *name, fileHandle_t *f, qboolean gamedir_only);
 void FS_FCloseFile(fileHandle_t f);
-qboolean FS_FileExists(const char *path, const char *file);
 int FS_Read(void *buffer, int size, fileHandle_t f);
 int FS_FRead(void *buffer, int size, int count, fileHandle_t f);
 
@@ -709,22 +728,23 @@ int FS_FRead(void *buffer, int size, int count, fileHandle_t f);
 // returns NULL if f is no valid handle
 const char* FS_GetFilenameForHandle(fileHandle_t f);
 
-char **FS_ListFiles(const char *findname, int *numfiles,
+strlist_t FS_ListFiles(const char *findname,
 		unsigned musthave, unsigned canthave);
-char **FS_ListFiles2(const char *findname, int *numfiles,
+strlist_t FS_ListFiles2(const char *findname,
 		unsigned musthave, unsigned canthave);
-void FS_FreeList(char **list, int nfiles);
 
 void FS_InitFilesystem(void);
 void FS_ShutdownFilesystem(void);
 void FS_BuildGameSpecificSearchPath(const char *dir);
 const char *FS_Gamedir(void);
 const char *FS_NextPath(const char *prevpath);
+int FS_LoadFile2(const char *path, void **buffer, int pad);
 int FS_LoadFile(const char *path, void **buffer);
+#define FS_FileExists(path) (FS_LoadFile2(path, NULL, 0) >= 0)
 qboolean FS_FileInGamedir(const char *file);
 qboolean FS_AddPAKFromGamedir(const char *pak);
 const char* FS_GetNextRawPath(const char* lastRawPath);
-char **FS_ListMods(int *nummods);
+strlist_t FS_ListMods(void);
 
 /* a null buffer will just return the file length without loading */
 /* a -1 length is not present */
@@ -872,8 +892,6 @@ const char *Sys_GetBinaryDir(void);
 void Sys_SetupFPU(void);
 
 /* ======================================================================= */
-
-void Mods_NamesFinish(void);
 
 /* stringlist_t API
  * Store strings in a dynamic array
