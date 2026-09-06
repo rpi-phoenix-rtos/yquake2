@@ -386,7 +386,22 @@ GL3_DrawFrameBufferObject(int x, int y, int w, int h, GLuint fboTexture, const f
 		glUniform4fv(shader->uniVblend, 1, v_blend);
 	}
 
+#ifdef __phoenix__
+	/* Phoenix-RTOS RPi4: upstream's (0,1,1,0) pairs a BOTTOM-origin GL texture with
+	 * Q2's top-origin 2D ortho, which is correct on a normal driver.  Our Mesa forces
+	 * Y_0_TOP on any framebuffer >= 1024x768 (state_tracker/st_atom_framebuffer.c),
+	 * because this in-process context never gets a window-system framebuffer and so
+	 * every fb reports FlipY == false.  The underwater ppFBO is full-screen, so it
+	 * trips that gate and already holds the scene top-down -- upstream's flip then
+	 * lands on top of ours and the view renders upside down (proved on HW: mirrored at
+	 * viewsize 100, upright at viewsize 70, where the fb drops under the gate).
+	 * Un-flip here to match.  This is a STOPGAP: the real fix is to declare the scanout
+	 * FBO FlipY (GL_MESA_framebuffer_flip_y, which our driver reports) and delete the
+	 * size gate, after which this must be reverted along with glamor's flips. */
+	drawTexturedRectangleNow(x, y, w, h, 0, 0, 1, 1);
+#else
 	drawTexturedRectangleNow(x, y, w, h, 0, 1, 1, 0);
+#endif
 }
 
 /*
