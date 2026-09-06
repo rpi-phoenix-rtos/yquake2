@@ -129,6 +129,10 @@ cvar_t *r_fixsurfsky;
 cvar_t *r_palettedtexture;
 cvar_t *r_validation;
 cvar_t *gl3_usefbo;
+/* TEMPORARY (Phoenix bug #2 triage): force the underwater post-process path from a
+ * normal spawn, so the FBO->screen blit can be observed without swimming.  Remove
+ * once the orientation question is settled. */
+cvar_t *gl3_forceunderwater;
 
 cvar_t *gl3_show_draw_stats;
 
@@ -295,6 +299,7 @@ GL3_Register(void)
 	gl_znear = ri.Cvar_Get("gl_znear", "4", CVAR_ARCHIVE);
 
 	gl3_usefbo = ri.Cvar_Get("gl3_usefbo", "1", CVAR_ARCHIVE); // use framebuffer object for postprocess effects (water)
+	gl3_forceunderwater = ri.Cvar_Get("gl3_forceunderwater", "0", 0); /* TEMPORARY: bug #2 triage */
 
 	gl3_show_draw_stats = ri.Cvar_Get("gl3_show_draw_stats", "0", CVAR_ARCHIVE);
 
@@ -1891,6 +1896,14 @@ GL3_RenderView(refdef_t *fd)
 	}
 
 	r_newrefdef = *fd;
+
+	/* TEMPORARY (bug #2 triage): forcing the FLAG rather than the FBO gate keeps all
+	 * three readers of RDF_UNDERWATER consistent (the FBO gate here, the water shader
+	 * selection in gl3_draw.c, and the blit).  The menu/player-model render carries
+	 * RDF_NOWORLDMODEL, so it still takes the direct path, as upstream intends. */
+	if (gl3_forceunderwater->value != 0.0f) {
+		r_newrefdef.rdflags |= RDF_UNDERWATER;
+	}
 
 	if (!gl3_worldmodel && !(r_newrefdef.rdflags & RDF_NOWORLDMODEL))
 	{
